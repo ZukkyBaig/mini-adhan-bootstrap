@@ -42,14 +42,28 @@ if ! command -v tmux >/dev/null 2>&1; then
   apt-get install -y tmux
 fi
 
-# Auto-run inside tmux unless already in tmux
+# Auto-run inside tmux unless already in tmux.
+# IMPORTANT: When this script is invoked via 'sudo bash /path/to/install.sh ...',
+# $0 is the script path but may not be executable. So we re-run via bash.
 if [[ -z "${TMUX:-}" ]]; then
-  echo "Not running in tmux. Launching installer inside tmux session..."
-  echo "If you disconnect, reattach with: tmux attach -t mini-azaan-install"
-  exec tmux new -s mini-azaan-install "sudo $0"
+  if [[ -t 0 && -t 1 ]]; then
+    echo "Not running in tmux. Launching installer inside tmux session..."
+    echo "If you disconnect, reattach with: tmux attach -t mini-azaan-install"
+
+    # Preserve args safely for the tmux command string
+    args=""
+    for a in "$@"; do
+      args+=" $(printf "%q" "$a")"
+    done
+
+    exec tmux new -s mini-azaan-install "bash $(printf "%q" "$0")${args}"
+  else
+    echo "No interactive terminal detected. Skipping tmux auto-launch."
+    echo "Tip: run this script from an SSH session for tmux protection."
+  fi
 fi
 
-echo "Running inside tmux session: ${TMUX}"
+echo "Running inside tmux session: ${TMUX:-none}"
 echo
 
 echo "Installing Mini Azaan..."
