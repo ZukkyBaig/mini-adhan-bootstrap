@@ -11,10 +11,46 @@ BIN_LINK="/usr/local/bin/mini-azaan"
 REPO_URL="git@github.com:zukkybaig/mini-azaan.git"
 GIT_REF="main"
 
+LOG_DIR="/var/log/mini-azaan"
+LOG_FILE="${LOG_DIR}/install.log"
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Please run as root."
   exit 1
 fi
+
+mkdir -p "${LOG_DIR}"
+chmod 755 "${LOG_DIR}"
+touch "${LOG_FILE}"
+chmod 644 "${LOG_FILE}"
+
+# Log everything (stdout+stderr) to file AND screen
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
+echo
+echo "========================================"
+echo " Mini Azaan installer starting"
+echo " $(date -Is)"
+echo " Log: ${LOG_FILE}"
+echo "========================================"
+echo
+
+# Ensure tmux exists early (so we can self-relaunch)
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "tmux not found. Installing tmux first..."
+  apt-get update
+  apt-get install -y tmux
+fi
+
+# Auto-run inside tmux unless already in tmux
+if [[ -z "${TMUX:-}" ]]; then
+  echo "Not running in tmux. Launching installer inside tmux session..."
+  echo "If you disconnect, reattach with: tmux attach -t mini-azaan-install"
+  exec tmux new -s mini-azaan-install "sudo $0"
+fi
+
+echo "Running inside tmux session: ${TMUX}"
+echo
 
 echo "Installing Mini Azaan..."
 echo
@@ -42,7 +78,8 @@ install_packages() {
     python3-venv \
     python3-pip \
     libsdl2-mixer-2.0-0 \
-    avahi-daemon
+    avahi-daemon \
+    tmux
 }
 
 ensure_ssh_key() {
@@ -116,22 +153,36 @@ configure_hostname() {
   echo
 }
 
-clone_repo_once() {
+ensure_repo() {
+  echo "Ensuring app repo is present at ${APP_DIR}..."
+
+  mkdir -p "${APP_ROOT}"
+  chown -R "${RUN_USER}:${RUN_USER}" "${APP_ROOT}"
+
+  if [[ -d "${APP_DIR}/.git" ]]; then
+    echo "Repo already exists, updating..."
+    sudo -u "${RUN_USER}" git -C "${APP_DIR}" fetch --all
+    sudo -u "${RUN_USER}" git -C "${APP_DIR}" checkout "${GIT_REF}"
+    sudo -u "${RUN_USER}" git -C "${APP_DIR}" pull
+    return 0
+  fi
+
+  echo "Repo not found, cloning..."
   rm -rf "${APP_DIR}"
   sudo -u "${RUN_USER}" git clone "${REPO_URL}" "${APP_DIR}"
+  sudo -u "${RUN_USER}" git -C "${APP_DIR}" checkout "${GIT_REF}" || true
 }
 
-clone_repo_with_retry() {
-  echo "Cloning private repo..."
+ensure_repo_with_retry() {
+  echo "Ensuring private repo access..."
 
   while true; do
-    if clone_repo_once; then
-      sudo -u "${RUN_USER}" git -C "${APP_DIR}" checkout "${GIT_REF}" || true
-      echo "Clone succeeded."
+    if ensure_repo; then
+      echo "Repo ready."
       break
     fi
 
-    echo "Clone failed. Ensure deploy key is added."
+    echo "Repo clone/update failed. Ensure deploy key is added."
     print_deploy_key
     wait_for_enter
   done
@@ -140,15 +191,22 @@ clone_repo_with_retry() {
 setup_venv() {
   echo "Setting up virtual environment..."
   cd "${APP_DIR}"
-  sudo -u "${RUN_USER}" python3 -m venv .venv
+
+  if [[ ! -d ".venv" ]]; then
+    sudo -u "${RUN_USER}" python3 -m venv .venv
+  fi
+
   sudo -u "${RUN_USER}" .venv/bin/pip install --upgrade pip
   sudo -u "${RUN_USER}" .venv/bin/pip install -r requirements.txt
 }
 
 seed_config_if_missing() {
   if [[ ! -f "${ETC_CONFIG}" && -f "${APP_DIR}/config.yml" ]]; then
+    echo "Seeding ${ETC_CONFIG} from repo config.yml"
     cp "${APP_DIR}/config.yml" "${ETC_CONFIG}"
     chmod 644 "${ETC_CONFIG}"
+  else
+    echo "Config exists at ${ETC_CONFIG}, leaving it unchanged."
   fi
 }
 
@@ -201,6 +259,8 @@ EOF
 }
 
 install_systemd_service() {
+  echo "Installing systemd unit: ${SERVICE_NAME}"
+
   cat > "/etc/systemd/system/${SERVICE_NAME}" <<EOF
 [Unit]
 Description=Mini Azaan Service
@@ -214,14 +274,8 @@ PermissionsStartOnly=true
 WorkingDirectory=${APP_DIR}
 
 ExecStartPre=/bin/sleep 2
-
-# Wait briefly for NTP sync if available (Linux/systemd, not Pi specific)
 ExecStartPre=/bin/bash -c 'if command -v timedatectl >/dev/null 2>&1; then for i in {1..30}; do timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi yes && exit 0; sleep 1; done; echo "NTP not synced yet, continuing"; fi; exit 0'
-
-# Configure ALSA default to whatever USB audio is attached (if any)
 ExecStartPre=/usr/local/bin/mini-azaan-audio-autoconfig
-
-# Give USB audio a chance to enumerate, but do not block forever
 ExecStartPre=/bin/bash -c 'for i in {1..30}; do grep -qi "USB-Audio" /proc/asound/cards && exit 0; sleep 1; done; echo "USB-Audio not detected yet, starting anyway"; exit 0'
 
 ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py
@@ -251,12 +305,43 @@ install_cli_link() {
 }
 
 start_service() {
+  echo "Starting service..."
   systemctl restart "${SERVICE_NAME}"
 }
 
 refresh_mdns() {
   systemctl enable avahi-daemon >/dev/null 2>&1 || true
   systemctl restart avahi-daemon >/dev/null 2>&1 || true
+}
+
+print_summary() {
+  local ip
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+
+  echo
+  echo "========================================"
+  echo " Installation complete"
+  echo " Log: ${LOG_FILE}"
+  echo
+  echo " Hostname: ${CONFIGURED_HOSTNAME:-$(hostname)}"
+  if [[ -n "${ip}" ]]; then
+    echo " IP: ${ip}"
+  fi
+  echo
+  echo " SSH:"
+  echo "   ssh ${RUN_USER}@${CONFIGURED_HOSTNAME:-$(hostname)}.local"
+  if [[ -n "${ip}" ]]; then
+    echo "   ssh ${RUN_USER}@${ip}"
+  fi
+  echo
+  echo " Service:"
+  echo "   systemctl status ${SERVICE_NAME}"
+  echo " Logs:"
+  echo "   journalctl -u ${SERVICE_NAME} -f"
+  echo " Installer log:"
+  echo "   tail -f ${LOG_FILE}"
+  echo "========================================"
+  echo
 }
 
 main() {
@@ -267,7 +352,7 @@ main() {
   print_deploy_key
   wait_for_enter
 
-  clone_repo_with_retry
+  ensure_repo_with_retry
   configure_hostname
 
   setup_venv
@@ -279,19 +364,14 @@ main() {
   start_service
   refresh_mdns
 
-  echo
-  echo "Installation complete."
-  echo
-  echo "You can SSH using:"
-  echo "  ssh ${RUN_USER}@${CONFIGURED_HOSTNAME}.local"
-  echo
-  echo "Run:"
-  echo "  mini-azaan version"
-  echo
+  print_summary
 
   read -rp "Reboot now? (y/N): " CONFIRM < /dev/tty
   if [[ "${CONFIRM,,}" == "y" ]]; then
+    echo "Rebooting..."
     reboot
+  else
+    echo "Skipping reboot. You can reboot later with: sudo reboot"
   fi
 }
 
