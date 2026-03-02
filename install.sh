@@ -204,8 +204,8 @@ install_systemd_service() {
   cat > "/etc/systemd/system/${SERVICE_NAME}" <<EOF
 [Unit]
 Description=Mini Azaan Service
-After=network-online.target sound.target
-Wants=network-online.target
+After=network-online.target sound.target time-sync.target
+Wants=network-online.target sound.target time-sync.target
 
 [Service]
 Type=simple
@@ -214,7 +214,14 @@ PermissionsStartOnly=true
 WorkingDirectory=${APP_DIR}
 
 ExecStartPre=/bin/sleep 2
+
+# Wait briefly for NTP sync if available (Linux/systemd, not Pi specific)
+ExecStartPre=/bin/bash -c 'if command -v timedatectl >/dev/null 2>&1; then for i in {1..30}; do timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi yes && exit 0; sleep 1; done; echo "NTP not synced yet, continuing"; fi; exit 0'
+
+# Configure ALSA default to whatever USB audio is attached (if any)
 ExecStartPre=/usr/local/bin/mini-azaan-audio-autoconfig
+
+# Give USB audio a chance to enumerate, but do not block forever
 ExecStartPre=/bin/bash -c 'for i in {1..30}; do grep -qi "USB-Audio" /proc/asound/cards && exit 0; sleep 1; done; echo "USB-Audio not detected yet, starting anyway"; exit 0'
 
 ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/main.py
