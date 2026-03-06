@@ -228,6 +228,21 @@ seed_config_if_missing() {
   fi
 }
 
+install_tailscale() {
+  echo "Installing Tailscale..."
+  curl -fsSL https://tailscale.com/install.sh | sh
+
+  echo
+  read -rp "Enter Tailscale auth key: " TS_AUTHKEY < /dev/tty
+
+  if [[ -n "${TS_AUTHKEY}" ]]; then
+    tailscale up --authkey="${TS_AUTHKEY}" --ssh
+    echo "Tailscale connected."
+  else
+    echo "No auth key provided. Run 'sudo tailscale up' manually after install."
+  fi
+}
+
 install_audio_autoconfig() {
   echo "Installing USB audio auto-config helper..."
 
@@ -385,9 +400,15 @@ print_summary() {
   echo " Installation complete"
   echo " Log: ${LOG_FILE}"
   echo
+  local ts_ip
+  ts_ip="$(tailscale ip -4 2>/dev/null || true)"
+
   echo " Hostname: ${CONFIGURED_HOSTNAME:-$(hostname)}"
   if [[ -n "${ip}" ]]; then
     echo " IP: ${ip}"
+  fi
+  if [[ -n "${ts_ip}" ]]; then
+    echo " Tailscale IP: ${ts_ip}"
   fi
   echo
   echo " SSH:"
@@ -408,6 +429,7 @@ print_summary() {
 
 main() {
   install_packages
+  install_tailscale
   ensure_ssh_key
   prepare_dirs
 
