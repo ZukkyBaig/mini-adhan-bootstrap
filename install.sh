@@ -246,63 +246,11 @@ install_tailscale() {
   fi
 }
 
-install_audio_autoconfig() {
-  echo "Installing USB audio auto-config helper..."
-
-  cat > /usr/local/bin/mini-azaan-audio-autoconfig <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-OUT="/etc/asound.conf"
-
-CARD_ID="$(awk '
-  $0 ~ /: USB-Audio/ {
-    for (i=1; i<=NF; i++) {
-      if ($i ~ /^\[/) {
-        gsub(/^\[/,"",$i)
-        gsub(/\]:$/,"",$i)
-        gsub(/\]$/,"",$i)
-        print $i
-        exit
-      }
-    }
-  }
-' /proc/asound/cards 2>/dev/null || true)"
-
-if [[ -z "${CARD_ID}" ]]; then
-  echo "No USB-Audio card detected. Leaving ${OUT} unchanged."
-  exit 0
-fi
-
-# Use plug so ALSA can adapt sample rate / channels reliably
-cat > "${OUT}" <<EOF_CONF
-pcm.usb_hw {
-  type hw
-  card ${CARD_ID}
-  device 0
-}
-
-pcm.usb {
-  type plug
-  slave.pcm "usb_hw"
-}
-
-pcm.!default {
-  type plug
-  slave.pcm "usb"
-}
-
-ctl.!default {
-  type hw
-  card ${CARD_ID}
-}
-EOF_CONF
-
-chmod 644 "${OUT}"
-echo "Configured ALSA default to USB card (with plug): ${CARD_ID}"
-EOF
-
-  chmod 755 /usr/local/bin/mini-azaan-audio-autoconfig
+install_system_files() {
+  RUN_USER="${RUN_USER}" "${APP_DIR}/deploy/system-update.sh"
+  # Configure ALSA then set hardware PCM high so app volume works as expected
+  /usr/local/bin/mini-azaan-audio-autoconfig || true
+  set_pcm_full_volume
 }
 
 set_pcm_full_volume() {
@@ -337,66 +285,6 @@ set_pcm_full_volume() {
   fi
 }
 
-install_systemd_service() {
-  echo "Installing systemd unit: ${SERVICE_NAME}"
-
-  cat > "/etc/systemd/system/${SERVICE_NAME}" <<EOF
-[Unit]
-Description=Mini Azaan Service
-After=network-online.target sound.target time-sync.target
-Wants=network-online.target sound.target time-sync.target
-
-[Service]
-Type=simple
-User=${RUN_USER}
-PermissionsStartOnly=true
-WorkingDirectory=${APP_DIR}
-
-ExecStartPre=/bin/sleep 2
-ExecStartPre=/bin/bash -c 'if command -v timedatectl >/dev/null 2>&1; then for i in {1..30}; do timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi yes && exit 0; sleep 1; done; echo "NTP not synced yet, continuing"; fi; exit 0'
-ExecStartPre=/bin/bash -c 'for i in {1..30}; do grep -qi "USB-Audio" /proc/asound/cards && exit 0; sleep 1; done; echo "USB-Audio not detected yet, starting anyway"; exit 0'
-ExecStartPre=/usr/local/bin/mini-azaan-audio-autoconfig
-ExecStartPre=/bin/bash -c 'CARD=$(awk "/USB-Audio/{print \$1; exit}" /proc/asound/cards | tr -d " "); [ -n "$CARD" ] && amixer -c "$CARD" sset PCM 100% || true'
-
-ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/run_scheduler.py
-Restart=always
-RestartSec=5
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable "${SERVICE_NAME}"
-}
-
-install_web_service() {
-  echo "Installing systemd unit: mini-azaan-web.service"
-
-  cat > "/etc/systemd/system/mini-azaan-web.service" <<EOF
-[Unit]
-Description=Mini Azaan Web UI
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=${RUN_USER}
-WorkingDirectory=${APP_DIR}
-ExecStart=${APP_DIR}/.venv/bin/uvicorn web.app:app --host 0.0.0.0 --port 80
-Restart=always
-RestartSec=5
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable mini-azaan-web.service
-}
-
 allow_low_port() {
   echo "Granting Python permission to bind port 80..."
   local real_python
@@ -407,27 +295,6 @@ allow_low_port() {
 start_web_service() {
   echo "Starting web service..."
   systemctl restart mini-azaan-web.service
-}
-
-install_cli_link() {
-  echo "Installing CLI..."
-
-  if [[ ! -f "${APP_DIR}/manage.sh" ]]; then
-    echo "manage.sh not found!"
-    exit 1
-  fi
-
-  chmod 755 "${APP_DIR}/manage.sh"
-  ln -sf "${APP_DIR}/manage.sh" "${BIN_LINK}"
-  chmod 755 "${BIN_LINK}"
-}
-
-configure_sudoers() {
-  echo "Configuring passwordless sudo for service management..."
-  cat > /etc/sudoers.d/mini-azaan <<EOF
-${RUN_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart mini-azaan.service, /usr/bin/systemctl status mini-azaan.service, /usr/local/bin/mini-azaan
-EOF
-  chmod 440 /etc/sudoers.d/mini-azaan
 }
 
 start_service() {
@@ -493,16 +360,9 @@ main() {
   setup_venv
   seed_config_if_missing
 
-  install_audio_autoconfig
-  # Configure ALSA then set hardware PCM high so app volume works as expected
-  /usr/local/bin/mini-azaan-audio-autoconfig || true
-  set_pcm_full_volume
+  install_system_files
 
-  install_systemd_service
-  install_web_service
   allow_low_port
-  install_cli_link
-  configure_sudoers
   start_service
   start_web_service
   refresh_mdns
