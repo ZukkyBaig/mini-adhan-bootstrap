@@ -356,7 +356,7 @@ ExecStartPre=/bin/sleep 2
 ExecStartPre=/bin/bash -c 'if command -v timedatectl >/dev/null 2>&1; then for i in {1..30}; do timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi yes && exit 0; sleep 1; done; echo "NTP not synced yet, continuing"; fi; exit 0'
 ExecStartPre=/bin/bash -c 'for i in {1..30}; do grep -qi "USB-Audio" /proc/asound/cards && exit 0; sleep 1; done; echo "USB-Audio not detected yet, starting anyway"; exit 0'
 ExecStartPre=/usr/local/bin/mini-azaan-audio-autoconfig
-ExecStartPre=/bin/bash -c 'amixer -c 0 sset PCM 100% || true'
+ExecStartPre=/bin/bash -c 'CARD=$(awk "/USB-Audio/{print \$1; exit}" /proc/asound/cards | tr -d " "); [ -n "$CARD" ] && amixer -c "$CARD" sset PCM 100% || true'
 
 ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/run_scheduler.py
 Restart=always
