@@ -348,8 +348,15 @@ resolve_secrets() {
     echo "Using PEM from previous install: ${PEM_FILE}"
   fi
 
-  # TS key: --ts-key argument > existing (not stored on disk, so only from arg)
-  # If either is missing, download and decrypt the bundle
+  # TS key: --ts-key argument > check if Tailscale already connected > secrets bundle
+  if [[ -z "${TS_AUTHKEY}" ]] && command -v tailscale >/dev/null 2>&1; then
+    if tailscale status >/dev/null 2>&1; then
+      echo "Tailscale already connected, skipping auth key."
+      TS_AUTHKEY="ALREADY_CONNECTED"
+    fi
+  fi
+
+  # Only download secrets if we're still missing something
   if [[ -z "${PEM_FILE}" || ! -f "${PEM_FILE}" ]] || [[ -z "${TS_AUTHKEY}" ]]; then
     download_and_decrypt_secrets
   fi
@@ -446,8 +453,10 @@ EOF
 }
 
 checkout_version() {
+  local pin_value=""
   case "${VERSION_MODE}" in
     stable)
+      pin_value="latest"
       local latest_tag
       latest_tag=$(git -C "${APP_DIR}" describe --tags --abbrev=0 2>/dev/null || true)
       if [[ -n "${latest_tag}" ]]; then
@@ -461,6 +470,7 @@ checkout_version() {
       if git -C "${APP_DIR}" tag -l "${VERSION_TAG}" | grep -q "^${VERSION_TAG}$"; then
         sudo -u "${RUN_USER}" git -C "${APP_DIR}" checkout "${VERSION_TAG}"
         echo "Installed version: ${VERSION_TAG}"
+        pin_value="${VERSION_TAG}"
       else
         echo "Tag '${VERSION_TAG}' not found. Available tags:"
         git -C "${APP_DIR}" tag -l | sort -V
@@ -470,6 +480,7 @@ checkout_version() {
           if git -C "${APP_DIR}" tag -l "${VERSION_TAG}" | grep -q "^${VERSION_TAG}$"; then
             sudo -u "${RUN_USER}" git -C "${APP_DIR}" checkout "${VERSION_TAG}"
             echo "Installed version: ${VERSION_TAG}"
+            pin_value="${VERSION_TAG}"
             break
           fi
           echo "Tag '${VERSION_TAG}' not found. Try again."
@@ -477,9 +488,13 @@ checkout_version() {
       fi
       ;;
     dev)
+      pin_value="dev"
       echo "Staying on dev branch head."
       ;;
   esac
+
+  echo "${pin_value}" | tee "${ETC_DIR}/version" > /dev/null
+  echo "Version pinned to: ${pin_value}"
 }
 
 setup_venv() {
@@ -508,6 +523,13 @@ seed_config_if_missing() {
 }
 
 install_tailscale() {
+  if [[ "${TS_AUTHKEY}" == "ALREADY_CONNECTED" ]]; then
+    echo "Tailscale already installed and connected."
+    # Update hostname if it changed
+    sudo tailscale set --hostname="${CONFIGURED_HOSTNAME}" 2>/dev/null || true
+    return 0
+  fi
+
   echo "Installing Tailscale..."
   curl -fsSL https://tailscale.com/install.sh | sh
 
