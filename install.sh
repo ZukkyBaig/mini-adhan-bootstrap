@@ -19,9 +19,13 @@ R2_BUCKET="mini-adhan-keys"
 R2_KEY_ID="6a0af8f8642b95aa7176b403cfb2da01"
 R2_SECRET_KEY="c355a5e341378ee41af2eea39b7dd8a33dd9d39c955d53daa2037516a8e86276"
 R2_PEM_OBJECT="gh-app.pem"
+R2_TS_KEY_OBJECT="tailscale-authkey.txt"
 
 PEM_FILE=""
+TS_AUTHKEY=""
 GH_TOKEN=""
+CONFIGURED_HOSTNAME=""
+VERSION_CHOICE=""
 
 LOG_DIR="/var/log/mini-adhan"
 LOG_FILE="${LOG_DIR}/install.log"
@@ -30,6 +34,9 @@ LOG_FILE="${LOG_DIR}/install.log"
 for arg in "$@"; do
   case "${arg}" in
     --pem=*) PEM_FILE="${arg#*=}" ;;
+    --ts-key=*) TS_AUTHKEY="${arg#*=}" ;;
+    --hostname=*) CONFIGURED_HOSTNAME="${arg#*=}" ;;
+    --version=*) VERSION_CHOICE="${arg#*=}" ;;
   esac
 done
 
@@ -95,8 +102,6 @@ if [[ -z "${RUN_HOME}" ]]; then
   exit 1
 fi
 
-CONFIGURED_HOSTNAME=""
-
 install_packages() {
   echo "Installing OS packages..."
   apt-get update
@@ -120,24 +125,24 @@ prepare_dirs() {
 }
 
 configure_hostname() {
-  echo
-  read -rp "Enter device hostname (default: mini-adhan): " NEW_HOSTNAME < /dev/tty
-  NEW_HOSTNAME=${NEW_HOSTNAME:-mini-adhan}
+  if [[ -z "${CONFIGURED_HOSTNAME}" ]]; then
+    echo
+    read -rp "Enter device hostname (default: mini-adhan): " CONFIGURED_HOSTNAME < /dev/tty
+    CONFIGURED_HOSTNAME=${CONFIGURED_HOSTNAME:-mini-adhan}
+  fi
 
   # Set hostname immediately on running system
-  hostnamectl set-hostname "${NEW_HOSTNAME}"
+  hostnamectl set-hostname "${CONFIGURED_HOSTNAME}"
 
   # Fix /etc/hosts
   if grep -q "127.0.1.1" /etc/hosts; then
-    sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${NEW_HOSTNAME}/" /etc/hosts
+    sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${CONFIGURED_HOSTNAME}/" /etc/hosts
   else
-    printf "127.0.1.1\t%s\n" "${NEW_HOSTNAME}" >> /etc/hosts
+    printf "127.0.1.1\t%s\n" "${CONFIGURED_HOSTNAME}" >> /etc/hosts
   fi
 
   # Disable cloud-init so it never stomps our config on reboot
   touch /etc/cloud/cloud-init.disabled
-
-  CONFIGURED_HOSTNAME="${NEW_HOSTNAME}"
 
   echo
   echo "Device hostname configured as: ${CONFIGURED_HOSTNAME}"
@@ -145,6 +150,33 @@ configure_hostname() {
 }
 
 select_version() {
+  # If --version= was provided, resolve it without prompting
+  if [[ -n "${VERSION_CHOICE}" ]]; then
+    case "${VERSION_CHOICE}" in
+      stable|1)
+        VERSION_MODE="stable"
+        GIT_REF="main"
+        ;;
+      dev|3)
+        VERSION_MODE="dev"
+        GIT_REF="dev"
+        echo "Warning: Development branch — may be unstable."
+        ;;
+      v*)
+        VERSION_MODE="tag"
+        VERSION_TAG="${VERSION_CHOICE}"
+        GIT_REF="main"
+        ;;
+      *)
+        echo "Unknown version '${VERSION_CHOICE}', defaulting to stable."
+        VERSION_MODE="stable"
+        GIT_REF="main"
+        ;;
+    esac
+    echo "Version: ${VERSION_MODE}${VERSION_TAG:+ ($VERSION_TAG)}"
+    return
+  fi
+
   echo
   echo "Which version would you like to install?"
   echo "  1) Latest stable release (recommended)"
@@ -182,14 +214,14 @@ select_version() {
   echo
 }
 
-download_pem_from_r2() {
-  local dest="${1:-/tmp/gh-app.pem}"
-  echo "Downloading PEM key from Cloudflare R2..."
+download_from_r2() {
+  local object="${1}"
+  local dest="${2}"
   R2_KEY_ID="${R2_KEY_ID}" \
   R2_SECRET_KEY="${R2_SECRET_KEY}" \
   R2_ENDPOINT="${R2_ENDPOINT}" \
   R2_BUCKET="${R2_BUCKET}" \
-  R2_PEM_OBJECT="${R2_PEM_OBJECT}" \
+  R2_OBJECT="${object}" \
   DEST="${dest}" \
   python3 -c "
 import hashlib, hmac, datetime, urllib.request, sys, os
@@ -198,7 +230,7 @@ key_id = os.environ['R2_KEY_ID']
 secret = os.environ['R2_SECRET_KEY']
 endpoint = os.environ['R2_ENDPOINT']
 bucket = os.environ['R2_BUCKET']
-obj = os.environ['R2_PEM_OBJECT']
+obj = os.environ['R2_OBJECT']
 dest = os.environ['DEST']
 
 now = datetime.datetime.now(datetime.UTC)
@@ -232,20 +264,43 @@ req = urllib.request.Request(endpoint + uri, headers={
 })
 try:
     data = urllib.request.urlopen(req).read()
-    if b'BEGIN' not in data:
-        print('ERROR: Downloaded file is not a valid PEM key', file=sys.stderr)
-        sys.exit(1)
     with open(dest, 'wb') as f:
         f.write(data)
-    print('PEM downloaded successfully.')
 except Exception as e:
-    print('ERROR: Failed to download PEM: ' + str(e), file=sys.stderr)
+    print('ERROR: Failed to download ' + obj + ': ' + str(e), file=sys.stderr)
     sys.exit(1)
 "
-  if [[ $? -ne 0 ]]; then
+}
+
+download_pem_from_r2() {
+  local dest="${1:-/tmp/gh-app.pem}"
+  echo "Downloading PEM key from Cloudflare R2..."
+  if ! download_from_r2 "${R2_PEM_OBJECT}" "${dest}"; then
     return 1
   fi
+  # Validate it's actually a PEM file
+  if ! grep -q "BEGIN" "${dest}" 2>/dev/null; then
+    echo "ERROR: Downloaded file is not a valid PEM key."
+    return 1
+  fi
+  echo "PEM downloaded successfully."
   PEM_FILE="${dest}"
+}
+
+download_ts_key_from_r2() {
+  local dest="/tmp/ts-authkey.txt"
+  echo "Downloading Tailscale auth key from Cloudflare R2..."
+  if ! download_from_r2 "${R2_TS_KEY_OBJECT}" "${dest}"; then
+    return 1
+  fi
+  TS_AUTHKEY="$(cat "${dest}" | tr -d '[:space:]')"
+  rm -f "${dest}"
+  if [[ "${TS_AUTHKEY}" != tskey-* ]]; then
+    echo "WARNING: Downloaded Tailscale key does not start with tskey-. Ignoring."
+    TS_AUTHKEY=""
+    return 1
+  fi
+  echo "Tailscale auth key downloaded."
 }
 
 resolve_pem_file() {
@@ -359,6 +414,7 @@ R2_BUCKET=${R2_BUCKET}
 R2_KEY_ID=${R2_KEY_ID}
 R2_SECRET_KEY=${R2_SECRET_KEY}
 R2_PEM_OBJECT=${R2_PEM_OBJECT}
+R2_TS_KEY_OBJECT=${R2_TS_KEY_OBJECT}
 EOF
 
   # Owned by RUN_USER so manage.sh can read them without sudo
@@ -436,8 +492,14 @@ install_tailscale() {
   echo "Installing Tailscale..."
   curl -fsSL https://tailscale.com/install.sh | sh
 
-  echo
-  read -rp "Enter Tailscale auth key: " TS_AUTHKEY < /dev/tty
+  # Resolve auth key: argument > R2 > prompt
+  if [[ -z "${TS_AUTHKEY}" ]]; then
+    download_ts_key_from_r2 || true
+  fi
+  if [[ -z "${TS_AUTHKEY}" ]]; then
+    echo
+    read -rp "Enter Tailscale auth key: " TS_AUTHKEY < /dev/tty
+  fi
 
   if [[ -n "${TS_AUTHKEY}" ]]; then
     tailscale up --authkey="${TS_AUTHKEY}" --ssh

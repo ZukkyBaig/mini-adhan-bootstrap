@@ -4,21 +4,55 @@ One-command installer for deploying [Mini Adhan](https://github.com/ZukkyBaig/mi
 
 ## Usage
 
-SSH into the Pi, then run:
+### Fully automatic (production provisioning)
+
+All keys are downloaded from R2 automatically:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ZukkyBaig/mini-adhan-bootstrap/main/install.sh -o /tmp/install.sh && sudo bash /tmp/install.sh --hostname=mini-adhan --version=stable
+```
+
+### Specific version
+
+```bash
+sudo bash /tmp/install.sh --hostname=mini-adhan-kitchen --version=v1.2.0
+```
+
+### Dev device
+
+```bash
+sudo bash /tmp/install.sh --hostname=mini-adhan-dev --version=dev
+```
+
+### Interactive (prompts for everything)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ZukkyBaig/mini-adhan-bootstrap/main/install.sh -o /tmp/install.sh && sudo bash /tmp/install.sh
 ```
 
-The PEM key is downloaded automatically from Cloudflare R2. For offline installs or if R2 is down:
+All arguments are optional. Anything not provided is either downloaded from R2 or prompted interactively.
+
+### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--hostname=NAME` | Set device hostname (skip prompt) |
+| `--version=SPEC` | `stable`, `dev`, or a tag like `v1.2.0` (skip prompt) |
+| `--pem=PATH` | Path to GitHub App PEM file (skip R2 download) |
+| `--ts-key=KEY` | Tailscale auth key (skip R2 download and prompt) |
+
+### Offline install
+
+If R2 is unreachable, provide keys manually:
 
 ```bash
 scp gh-app.pem pi@<pi-ip>:/tmp/
-curl -fsSL https://raw.githubusercontent.com/ZukkyBaig/mini-adhan-bootstrap/main/install.sh -o /tmp/install.sh
-sudo bash /tmp/install.sh --pem=/tmp/gh-app.pem
+sudo bash /tmp/install.sh --pem=/tmp/gh-app.pem --ts-key=tskey-auth-...
 ```
 
-The installer runs inside a tmux session automatically. If your SSH connection drops, reattach with:
+## tmux protection
+
+The installer runs inside a tmux session automatically. If your SSH connection drops:
 
 ```bash
 tmux attach -t mini-adhan-install
@@ -27,29 +61,15 @@ tmux attach -t mini-adhan-install
 ## What it does
 
 1. Installs OS packages (git, python3, alsa-utils, avahi-daemon, tmux, dnsmasq-base, etc.)
-2. Installs and configures Tailscale for remote access
-3. Prompts for a device hostname (default: `mini-adhan`)
-4. Prompts for version selection:
-   - **Latest stable release** (default) — clones main, checks out the latest git tag
-   - **Specific version** — e.g. `v1.2.0`
-   - **Development branch** — tracks `dev` branch head
-5. Downloads PEM key from R2 and generates a GitHub App installation token
-6. Clones the private app repo to `/opt/mini-adhan/app` using the token
+2. Installs Tailscale (key from R2, `--ts-key=`, or prompted)
+3. Sets device hostname (from `--hostname=` or prompted)
+4. Selects version (from `--version=` or prompted)
+5. Downloads PEM from R2 and generates a GitHub App installation token
+6. Clones the private app repo using the token
 7. Stores credentials at `/etc/mini-adhan/` for future `adhan update` and `adhan rotate-key`
-8. Creates a Python venv and installs dependencies
-9. Seeds `/etc/mini-adhan/config.yml` from the repo (only on first install)
-10. Runs `deploy/system-update.sh` to install systemd units, ALSA config, and helper scripts
-11. Sets USB audio PCM to 100% (hardware baseline for software volume control)
-12. Starts the scheduler and web services
-13. Prints a summary with Web UI URL, SSH access, and installed version
-
-## Authentication
-
-Uses a GitHub App installation token instead of SSH deploy keys. The PEM key is stored in Cloudflare R2 and downloaded automatically during install. R2 credentials in the script are read-only, scoped to a single bucket containing only the PEM file.
-
-After install, credentials are stored at `/etc/mini-adhan/gh-app.{pem,conf}` so `adhan update` can generate fresh tokens without re-downloading.
-
-To rotate the PEM key after a GitHub App key reset: `adhan rotate-key`
+8. Creates Python venv and installs dependencies
+9. Seeds config, installs systemd units, configures ALSA
+10. Starts services and prints summary with version, URLs, and SSH access
 
 ## Key paths on the Pi
 
@@ -64,4 +84,4 @@ To rotate the PEM key after a GitHub App key reset: `adhan rotate-key`
 
 ## Re-running
 
-The installer is idempotent for most steps — it reuses an existing PEM if found at `/etc/mini-adhan/gh-app.pem`, skips config seeding if the file exists, and does `git pull` if the repo is already cloned.
+The installer is idempotent — it reuses existing credentials, skips config seeding if the file exists, and does `git pull` if the repo is already cloned.
