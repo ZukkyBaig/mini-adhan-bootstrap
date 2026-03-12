@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_NAME="mini-azaan.service"
-APP_ROOT="/opt/mini-azaan"
+SERVICE_NAME="mini-adhan.service"
+APP_ROOT="/opt/mini-adhan"
 APP_DIR="${APP_ROOT}/app"
-ETC_DIR="/etc/mini-azaan"
+ETC_DIR="/etc/mini-adhan"
 ETC_CONFIG="${ETC_DIR}/config.yml"
-BIN_LINK="/usr/local/bin/mini-azaan"
+BIN_LINK="/usr/local/bin/adhan"
 
-REPO_URL="git@github.com:zukkybaig/mini-azaan.git"
+REPO_URL="git@github.com:zukkybaig/mini-adhan.git"
 GIT_REF="main"
+VERSION_MODE=""
+VERSION_TAG=""
 
-LOG_DIR="/var/log/mini-azaan"
+LOG_DIR="/var/log/mini-adhan"
 LOG_FILE="${LOG_DIR}/install.log"
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -29,7 +31,7 @@ exec > >(tee -a "${LOG_FILE}") 2>&1
 
 echo
 echo "========================================"
-echo " Mini Azaan installer starting"
+echo " Mini Adhan installer starting"
 echo " $(date -Is)"
 echo " Log: ${LOG_FILE}"
 echo "========================================"
@@ -48,7 +50,7 @@ fi
 if [[ -z "${TMUX:-}" ]]; then
   if [[ -t 0 && -t 1 ]]; then
     echo "Not running in tmux. Launching installer inside tmux session..."
-    echo "If you disconnect, reattach with: tmux attach -t mini-azaan-install"
+    echo "If you disconnect, reattach with: tmux attach -t mini-adhan-install"
 
     # Preserve args safely for the tmux command string
     args=""
@@ -56,7 +58,7 @@ if [[ -z "${TMUX:-}" ]]; then
       args+=" $(printf "%q" "$a")"
     done
 
-    exec tmux new -s mini-azaan-install "bash $(printf "%q" "$0")${args}"
+    exec tmux new -s mini-adhan-install "bash $(printf "%q" "$0")${args}"
   else
     echo "No interactive terminal detected. Skipping tmux auto-launch."
     echo "Tip: run this script from an SSH session for tmux protection."
@@ -66,7 +68,7 @@ fi
 echo "Running inside tmux session: ${TMUX:-none}"
 echo
 
-echo "Installing Mini Azaan..."
+echo "Installing Mini Adhan..."
 echo
 
 RUN_USER="${SUDO_USER:-pi}"
@@ -106,7 +108,7 @@ ensure_ssh_key() {
   chmod 700 "${SSH_DIR}"
 
   if [[ ! -f "${KEY_PATH}" ]]; then
-    sudo -u "${RUN_USER}" ssh-keygen -t ed25519 -N "" -f "${KEY_PATH}" -C "mini-azaan-${RUN_USER}@$(hostname)"
+    sudo -u "${RUN_USER}" ssh-keygen -t ed25519 -N "" -f "${KEY_PATH}" -C "mini-adhan-${RUN_USER}@$(hostname)"
   fi
 
   sudo -u "${RUN_USER}" bash -c "ssh-keyscan -H github.com >> '${SSH_DIR}/known_hosts' 2>/dev/null || true"
@@ -149,8 +151,8 @@ prepare_dirs() {
 
 configure_hostname() {
   echo
-  read -rp "Enter device hostname (default: mini-azaan): " NEW_HOSTNAME < /dev/tty
-  NEW_HOSTNAME=${NEW_HOSTNAME:-mini-azaan}
+  read -rp "Enter device hostname (default: mini-adhan): " NEW_HOSTNAME < /dev/tty
+  NEW_HOSTNAME=${NEW_HOSTNAME:-mini-adhan}
 
   # Set hostname immediately on running system
   hostnamectl set-hostname "${NEW_HOSTNAME}"
@@ -170,6 +172,81 @@ configure_hostname() {
   echo
   echo "Device hostname configured as: ${CONFIGURED_HOSTNAME}"
   echo
+}
+
+select_version() {
+  echo
+  echo "Which version would you like to install?"
+  echo "  1) Latest stable release (recommended)"
+  echo "  2) Specific version (e.g. v1.2.0)"
+  echo "  3) Development branch (for testing)"
+  read -rp "Choice [1]: " VERSION_CHOICE < /dev/tty
+  VERSION_CHOICE=${VERSION_CHOICE:-1}
+
+  case "${VERSION_CHOICE}" in
+    1)
+      VERSION_MODE="stable"
+      GIT_REF="main"
+      ;;
+    2)
+      VERSION_MODE="tag"
+      GIT_REF="main"
+      read -rp "Enter version (e.g. v1.2.0): " VERSION_TAG < /dev/tty
+      if [[ -z "${VERSION_TAG}" ]]; then
+        echo "No version specified, defaulting to latest stable release."
+        VERSION_MODE="stable"
+      fi
+      ;;
+    3)
+      VERSION_MODE="dev"
+      GIT_REF="dev"
+      echo
+      echo "Warning: Development branch — may be unstable."
+      ;;
+    *)
+      echo "Invalid choice, defaulting to latest stable release."
+      VERSION_MODE="stable"
+      GIT_REF="main"
+      ;;
+  esac
+  echo
+}
+
+checkout_version() {
+  case "${VERSION_MODE}" in
+    stable)
+      local latest_tag
+      latest_tag=$(git -C "${APP_DIR}" describe --tags --abbrev=0 2>/dev/null || true)
+      if [[ -n "${latest_tag}" ]]; then
+        sudo -u "${RUN_USER}" git -C "${APP_DIR}" checkout "${latest_tag}"
+        echo "Installed version: ${latest_tag}"
+      else
+        echo "No tags found, staying on ${GIT_REF} branch head."
+      fi
+      ;;
+    tag)
+      if git -C "${APP_DIR}" tag -l "${VERSION_TAG}" | grep -q "^${VERSION_TAG}$"; then
+        sudo -u "${RUN_USER}" git -C "${APP_DIR}" checkout "${VERSION_TAG}"
+        echo "Installed version: ${VERSION_TAG}"
+      else
+        echo "Tag '${VERSION_TAG}' not found. Available tags:"
+        git -C "${APP_DIR}" tag -l | sort -V
+        echo
+        while true; do
+          read -rp "Enter version (e.g. v1.2.0): " VERSION_TAG < /dev/tty
+          if git -C "${APP_DIR}" tag -l "${VERSION_TAG}" | grep -q "^${VERSION_TAG}$"; then
+            sudo -u "${RUN_USER}" git -C "${APP_DIR}" checkout "${VERSION_TAG}"
+            echo "Installed version: ${VERSION_TAG}"
+            break
+          fi
+          echo "Tag '${VERSION_TAG}' not found. Try again."
+        done
+      fi
+      ;;
+    dev)
+      echo "Staying on dev branch head."
+      ;;
+  esac
 }
 
 ensure_repo() {
@@ -250,10 +327,10 @@ install_tailscale() {
 install_system_files() {
   RUN_USER="${RUN_USER}" "${APP_DIR}/deploy/system-update.sh"
   # Configure ALSA then set hardware PCM high so app volume works as expected
-  /usr/local/bin/mini-azaan-setup-alsa || true
+  /usr/local/bin/mini-adhan-setup-alsa || true
   set_pcm_full_volume
   # Pre-create the AP profile so it's ready without NetworkManager needing to scan
-  /usr/local/bin/mini-azaan-ap-mode create || true
+  /usr/local/bin/mini-adhan-ap-mode create || true
 }
 
 set_pcm_full_volume() {
@@ -297,7 +374,7 @@ allow_low_port() {
 
 start_web_service() {
   echo "Starting web service..."
-  systemctl restart mini-azaan-web.service
+  systemctl restart mini-adhan-web.service
 }
 
 start_service() {
@@ -314,9 +391,13 @@ print_summary() {
   local ip
   ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 
+  local installed_version
+  installed_version="$(git -C "${APP_DIR}" describe --tags --always 2>/dev/null || echo "unknown")"
+
   echo
   echo "========================================"
   echo " Installation complete"
+  echo " Version: ${installed_version}"
   echo " Log: ${LOG_FILE}"
   echo
   local ts_ip
@@ -357,8 +438,10 @@ main() {
   print_deploy_key
   wait_for_enter
 
-  ensure_repo_with_retry
   configure_hostname
+  select_version
+  ensure_repo_with_retry
+  checkout_version
 
   setup_venv
   seed_config_if_missing
