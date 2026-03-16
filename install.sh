@@ -19,6 +19,9 @@ R2_BUCKET="mini-adhan-keys"
 R2_KEY_ID="6a0af8f8642b95aa7176b403cfb2da01"
 R2_SECRET_KEY="c355a5e341378ee41af2eea39b7dd8a33dd9d39c955d53daa2037516a8e86276"
 R2_SECRETS_OBJECT="secrets.enc"
+R2_TLS_OBJECT="tls-bundle.enc"
+CF_API_TOKEN="PLACEHOLDER_REPLACE_WITH_REAL_TOKEN"
+CF_ZONE_ID="PLACEHOLDER_REPLACE_WITH_REAL_ZONE_ID"
 
 PEM_FILE=""
 TS_AUTHKEY=""
@@ -582,11 +585,64 @@ set_pcm_full_volume() {
   fi
 }
 
-allow_low_port() {
-  echo "Granting Python permission to bind port 80..."
-  local real_python
-  real_python="$(readlink -f "${APP_DIR}/.venv/bin/python3")"
-  setcap 'cap_net_bind_service=+ep' "${real_python}"
+install_nginx() {
+  echo "Installing nginx..."
+  apt-get install -y nginx >/dev/null 2>&1 || true
+}
+
+install_tls_cert() {
+  echo "Installing TLS certificate..."
+  local tls_dir="${ETC_DIR}/tls"
+  local enc_dest="/tmp/tls-bundle.enc"
+  local tar_dest="/tmp/tls-bundle.tar.gz"
+
+  mkdir -p "${tls_dir}"
+
+  if ! download_from_r2 "${R2_TLS_OBJECT}" "${enc_dest}"; then
+    echo "WARNING: Failed to download TLS bundle. HTTPS will not be available."
+    return 0
+  fi
+
+  # Decrypt with the same password used for secrets
+  if [[ -z "${PROVISION_PASSWORD}" ]]; then
+    echo "WARNING: No provisioning password available for TLS bundle. HTTPS will not be available."
+    rm -f "${enc_dest}"
+    return 0
+  fi
+
+  if ! openssl enc -aes-256-cbc -pbkdf2 -d \
+      -in "${enc_dest}" -out "${tar_dest}" \
+      -pass "pass:${PROVISION_PASSWORD}" 2>/dev/null; then
+    echo "WARNING: Failed to decrypt TLS bundle. HTTPS will not be available."
+    rm -f "${enc_dest}" "${tar_dest}"
+    return 0
+  fi
+
+  tar xzf "${tar_dest}" -C "${tls_dir}"
+  chmod 600 "${tls_dir}/fullchain.pem" "${tls_dir}/privkey.pem" 2>/dev/null || true
+  rm -f "${enc_dest}" "${tar_dest}"
+
+  echo "TLS certificate installed at ${tls_dir}/"
+}
+
+install_cloudflare_creds() {
+  echo "Installing Cloudflare DNS credentials..."
+  cat > "${ETC_DIR}/cloudflare.conf" << EOF
+CF_API_TOKEN=${CF_API_TOKEN}
+CF_ZONE_ID=${CF_ZONE_ID}
+EOF
+  chmod 600 "${ETC_DIR}/cloudflare.conf"
+  echo "Cloudflare credentials stored."
+}
+
+run_initial_dns_update() {
+  echo "Running initial DNS update..."
+  local dns_script="${APP_DIR}/scripts/update-dns.py"
+  if [[ -f "${dns_script}" && -f "${ETC_DIR}/cloudflare.conf" ]]; then
+    sudo -u "${RUN_USER}" "${APP_DIR}/.venv/bin/python" "${dns_script}" || echo "WARNING: DNS update failed (non-critical)."
+  else
+    echo "Skipping DNS update (script or config not found)."
+  fi
 }
 
 start_web_service() {
@@ -628,9 +684,16 @@ print_summary() {
   local ts_ip
   ts_ip="$(tailscale ip -4 2>/dev/null || true)"
 
+  local hn="${CONFIGURED_HOSTNAME:-$(hostname)}"
+  local machine_suffix
+  machine_suffix="$(cat /etc/machine-id | tail -c 6 | head -c 5 | tr '[:lower:]' '[:upper:]')"
+
   echo " Web UI:"
-  echo "   http://${CONFIGURED_HOSTNAME:-$(hostname)}.local"
-  echo " Hostname: ${CONFIGURED_HOSTNAME:-$(hostname)}"
+  if [[ -f "${ETC_DIR}/tls/fullchain.pem" ]]; then
+    echo "   https://${hn}-${machine_suffix}.d.miniadhan.com"
+  fi
+  echo "   http://${hn}.local"
+  echo " Hostname: ${hn}"
   if [[ -n "${ip}" ]]; then
     echo " IP: ${ip}"
   fi
@@ -668,12 +731,15 @@ main() {
   setup_venv
   seed_config_if_missing
 
+  install_nginx
+  install_tls_cert
+  install_cloudflare_creds
   install_system_files
 
-  allow_low_port
   start_service
   start_web_service
   refresh_mdns
+  run_initial_dns_update
 
   print_summary
 
