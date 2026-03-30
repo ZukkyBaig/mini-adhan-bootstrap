@@ -509,7 +509,16 @@ setup_venv() {
   fi
 
   sudo -u "${RUN_USER}" .venv/bin/pip install --upgrade pip
+  # Configure git to use GitHub App token for private adhanpy repo SSH URLs
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    export GIT_CONFIG_COUNT=2
+    export GIT_CONFIG_KEY_0="url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
+    export GIT_CONFIG_VALUE_0="ssh://git@github.com/"
+    export GIT_CONFIG_KEY_1="url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
+    export GIT_CONFIG_VALUE_1="git@github.com:"
+  fi
   sudo -u "${RUN_USER}" .venv/bin/pip install -r requirements.txt
+  unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 2>/dev/null || true
 }
 
 seed_config_if_missing() {
