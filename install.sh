@@ -431,6 +431,42 @@ ensure_repo() {
   sudo -u "${RUN_USER}" git -C "${APP_DIR}" remote set-url origin "https://github.com/zukkybaig/mini-adhan.git"
 }
 
+ensure_audio_library() {
+  echo "Installing adhan audio library..."
+  local audio_repo_dir="${APP_ROOT}/audio-library"
+  local auth_url="https://x-access-token:${GH_TOKEN}@github.com/ZukkyBaig/mini-adhan-audio.git"
+  local dest="${APP_DIR}/audio/reciters"
+
+  if [[ -d "${audio_repo_dir}/.git" ]]; then
+    echo "Audio library exists, updating..."
+    sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" remote set-url origin "${auth_url}"
+    sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" pull --ff-only || {
+      echo "Pull failed, re-cloning..."
+      rm -rf "${audio_repo_dir}"
+      sudo -u "${RUN_USER}" git clone --depth 1 "${auth_url}" "${audio_repo_dir}"
+    }
+  else
+    echo "Cloning audio library (~140 MB, this may take a minute)..."
+    rm -rf "${audio_repo_dir}"
+    sudo -u "${RUN_USER}" git clone --depth 1 "${auth_url}" "${audio_repo_dir}"
+  fi
+
+  # Clear token from remote URL
+  sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" remote set-url origin "https://github.com/ZukkyBaig/mini-adhan-audio.git"
+
+  # Copy shipping files into the app
+  echo "Copying audio files into app..."
+  mkdir -p "${dest}/images"
+  cp "${audio_repo_dir}"/audio/*.mp3 "${dest}/"
+  cp "${audio_repo_dir}"/images/*.jpg "${dest}/images/"
+  cp "${audio_repo_dir}/manifest.json" "${dest}/manifest.json"
+  chown -R "${RUN_USER}:${RUN_USER}" "${dest}"
+
+  local count
+  count=$(ls "${dest}"/*.mp3 2>/dev/null | wc -l)
+  echo "Audio library installed: ${count} reciters."
+}
+
 store_credentials() {
   echo "Storing credentials for future updates..."
 
@@ -734,6 +770,7 @@ main() {
   install_tailscale
   select_version
   ensure_repo
+  ensure_audio_library
   store_credentials
   checkout_version
 
