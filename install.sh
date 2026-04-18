@@ -437,18 +437,19 @@ ensure_audio_library() {
   local auth_url="https://x-access-token:${GH_TOKEN}@github.com/ZukkyBaig/mini-adhan-audio.git"
   local dest="${APP_DIR}/audio/reciters"
 
-  if [[ -d "${audio_repo_dir}/.git" ]]; then
-    echo "Audio library exists, updating..."
-    sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" remote set-url origin "${auth_url}"
-    sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" pull --ff-only || {
-      echo "Pull failed, re-cloning..."
-      rm -rf "${audio_repo_dir}"
-      sudo -u "${RUN_USER}" git clone --depth 1 "${auth_url}" "${audio_repo_dir}"
-    }
+  echo "Cloning audio library..."
+  rm -rf "${audio_repo_dir}"
+  sudo -u "${RUN_USER}" git clone "${auth_url}" "${audio_repo_dir}"
+
+  # Checkout the latest tag
+  local latest_tag
+  latest_tag=$(git -C "${audio_repo_dir}" tag -l 'v*' --sort=-v:refname | head -1)
+
+  if [[ -n "${latest_tag}" ]]; then
+    echo "Using audio library release: ${latest_tag}"
+    sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" checkout "${latest_tag}" --quiet
   else
-    echo "Cloning audio library (~140 MB, this may take a minute)..."
-    rm -rf "${audio_repo_dir}"
-    sudo -u "${RUN_USER}" git clone --depth 1 "${auth_url}" "${audio_repo_dir}"
+    echo "WARNING: No release tags found. Using latest commit."
   fi
 
   # Clear token from remote URL
