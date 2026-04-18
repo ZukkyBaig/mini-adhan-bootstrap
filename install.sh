@@ -457,14 +457,21 @@ ensure_audio_library() {
   # Copy shipping files into the app
   echo "Copying audio files into app..."
   mkdir -p "${dest}/images"
-  cp "${audio_repo_dir}"/audio/*.mp3 "${dest}/"
+  cp "${audio_repo_dir}"/audio/*.mp3 "${dest}/" 2>/dev/null || true
+  cp "${audio_repo_dir}"/audio/*.ogg "${dest}/" 2>/dev/null || true
+  cp "${audio_repo_dir}"/audio/*.flac "${dest}/" 2>/dev/null || true
   cp "${audio_repo_dir}"/images/*.jpg "${dest}/images/"
   cp "${audio_repo_dir}/manifest.json" "${dest}/manifest.json"
   chown -R "${RUN_USER}:${RUN_USER}" "${dest}"
 
+  # Extract library version for the settings page
+  local lib_version
+  lib_version=$(python3 -c "import json; print(json.load(open('${audio_repo_dir}/manifest.json'))['library_version'])" 2>/dev/null || echo "unknown")
+  echo "${lib_version}" > "${ETC_DIR}/audio-library-version"
+
   local count
-  count=$(ls "${dest}"/*.mp3 2>/dev/null | wc -l)
-  echo "Audio library installed: ${count} reciters."
+  count=$(find "${dest}" -maxdepth 1 -type f \( -name '*.mp3' -o -name '*.ogg' -o -name '*.flac' \) | wc -l)
+  echo "Audio library v${lib_version} installed: ${count} reciters."
 }
 
 store_credentials() {
