@@ -458,6 +458,7 @@ ensure_audio_library() {
 
   # Copy shipping files into the app
   echo "Copying audio files into app..."
+  rm -rf "${dest}"
   mkdir -p "${dest}/images"
   cp "${audio_repo_dir}"/audio/*.mp3 "${dest}/" 2>/dev/null || true
   cp "${audio_repo_dir}"/audio/*.ogg "${dest}/" 2>/dev/null || true
