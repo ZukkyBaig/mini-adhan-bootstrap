@@ -439,7 +439,8 @@ ensure_audio_library() {
 
   echo "Cloning audio library..."
   rm -rf "${audio_repo_dir}"
-  sudo -u "${RUN_USER}" git clone "${auth_url}" "${audio_repo_dir}"
+  sudo -u "${RUN_USER}" git clone --depth 1 "${auth_url}" "${audio_repo_dir}"
+  sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" fetch --tags 2>/dev/null || true
 
   # Checkout the latest tag
   local latest_tag
