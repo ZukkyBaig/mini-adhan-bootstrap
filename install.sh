@@ -715,7 +715,7 @@ run_initial_dns_update() {
   echo "Running initial DNS update..."
   local dns_script="${APP_DIR}/scripts/update-dns.py"
   if [[ -f "${dns_script}" && -f "${ETC_DIR}/cloudflare.conf" ]]; then
-    sudo -u "${RUN_USER}" "${APP_DIR}/.venv/bin/python" "${dns_script}" || echo "WARNING: DNS update failed (non-critical)."
+    "${APP_DIR}/.venv/bin/python" "${dns_script}" || echo "WARNING: DNS update failed (non-critical)."
   else
     echo "Skipping DNS update (script or config not found)."
   fi
