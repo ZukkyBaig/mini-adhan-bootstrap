@@ -480,7 +480,9 @@ ensure_audio_library() {
 store_credentials() {
   echo "Storing credentials for future updates..."
 
-  cp "${PEM_FILE}" "${ETC_DIR}/gh-app.pem"
+  if [[ "$(realpath -- "${PEM_FILE}")" != "$(realpath -- "${ETC_DIR}/gh-app.pem")" ]]; then
+    cp "${PEM_FILE}" "${ETC_DIR}/gh-app.pem"
+  fi
 
   cat > "${ETC_DIR}/gh-app.conf" << EOF
 GH_APP_ID=${GH_APP_ID}
