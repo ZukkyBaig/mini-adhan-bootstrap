@@ -435,18 +435,29 @@ ensure_audio_library() {
   echo "Installing adhan audio library..."
   local audio_repo_dir="${APP_ROOT}/audio-library"
   local auth_url="https://x-access-token:${GH_TOKEN}@github.com/ZukkyBaig/mini-adhan-audio.git"
+  local public_url="https://github.com/ZukkyBaig/mini-adhan-audio.git"
   local dest="${APP_DIR}/audio/reciters"
 
-  echo "Cloning audio library..."
-  rm -rf "${audio_repo_dir}"
-  sudo -u "${RUN_USER}" git clone --depth 1 "${auth_url}" "${audio_repo_dir}"
-  sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" fetch --tags 2>/dev/null || true
+  if [[ -d "${audio_repo_dir}/.git" ]]; then
+    echo "Audio library repo exists, fetching tags..."
+    sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" remote set-url origin "${auth_url}"
+    sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" fetch --tags --quiet origin || true
+  else
+    echo "Cloning audio library..."
+    rm -rf "${audio_repo_dir}"
+    sudo -u "${RUN_USER}" git clone --depth 1 "${auth_url}" "${audio_repo_dir}"
+    sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" fetch --tags 2>/dev/null || true
+  fi
 
-  # Checkout the latest tag
+  # Checkout the latest tag (skip if already on it)
   local latest_tag
   latest_tag=$(git -C "${audio_repo_dir}" tag -l 'v*' --sort=-v:refname | head -1)
+  local current_tag
+  current_tag=$(git -C "${audio_repo_dir}" describe --tags --exact-match 2>/dev/null || echo "")
 
-  if [[ -n "${latest_tag}" ]]; then
+  if [[ -n "${latest_tag}" && "${current_tag}" == "${latest_tag}" ]]; then
+    echo "Audio library already at ${latest_tag}, skipping checkout."
+  elif [[ -n "${latest_tag}" ]]; then
     echo "Using audio library release: ${latest_tag}"
     sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" checkout "${latest_tag}" --quiet
   else
@@ -454,7 +465,7 @@ ensure_audio_library() {
   fi
 
   # Clear token from remote URL
-  sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" remote set-url origin "https://github.com/ZukkyBaig/mini-adhan-audio.git"
+  sudo -u "${RUN_USER}" git -C "${audio_repo_dir}" remote set-url origin "${public_url}"
 
   # Copy shipping files into the app
   echo "Copying audio files into app..."
