@@ -568,16 +568,24 @@ setup_venv() {
   fi
 
   sudo -u "${RUN_USER}" .venv/bin/pip install --upgrade pip
-  # Configure git to use GitHub App token for private adhanpy repo SSH URLs
+
+  # pip's git+ deps (e.g. private adhanpy) need GitHub App token auth.
+  # `sudo -u` strips env vars (sudoers env_reset), so previous `export ...`
+  # never reached pip's subprocess. Pass GIT_CONFIG_* inline via `env`,
+  # and rewrite both https:// and ssh:// URL forms to the token-auth form.
   if [[ -n "${GH_TOKEN:-}" ]]; then
-    export GIT_CONFIG_COUNT=2
-    export GIT_CONFIG_KEY_0="url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
-    export GIT_CONFIG_VALUE_0="ssh://git@github.com/"
-    export GIT_CONFIG_KEY_1="url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
-    export GIT_CONFIG_VALUE_1="git@github.com:"
+    sudo -u "${RUN_USER}" env \
+      "GIT_CONFIG_COUNT=3" \
+      "GIT_CONFIG_KEY_0=url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" \
+      "GIT_CONFIG_VALUE_0=https://github.com/" \
+      "GIT_CONFIG_KEY_1=url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" \
+      "GIT_CONFIG_VALUE_1=ssh://git@github.com/" \
+      "GIT_CONFIG_KEY_2=url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf" \
+      "GIT_CONFIG_VALUE_2=git@github.com:" \
+      .venv/bin/pip install -r requirements.txt
+  else
+    sudo -u "${RUN_USER}" .venv/bin/pip install -r requirements.txt
   fi
-  sudo -u "${RUN_USER}" .venv/bin/pip install -r requirements.txt
-  unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 2>/dev/null || true
 }
 
 seed_config_if_missing() {
