@@ -12,16 +12,16 @@ GIT_REF="main"
 VERSION_MODE=""
 VERSION_TAG=""
 
-GH_APP_ID="3076077"
-GH_INSTALL_ID="115896741"
-R2_ENDPOINT="https://a9ae43b7dc4de560ad084c65215e5250.r2.cloudflarestorage.com"
-R2_BUCKET="mini-adhan-keys"
-R2_KEY_ID="6a0af8f8642b95aa7176b403cfb2da01"
-R2_SECRET_KEY="c355a5e341378ee41af2eea39b7dd8a33dd9d39c955d53daa2037516a8e86276"
-R2_SECRETS_OBJECT="secrets.enc"
-R2_TLS_OBJECT="tls-bundle.enc"
-CF_API_TOKEN="PLACEHOLDER_REPLACE_WITH_REAL_TOKEN"
-CF_ZONE_ID="PLACEHOLDER_REPLACE_WITH_REAL_ZONE_ID"
+MINI_ADHAN_GH_APP_ID="3076077"
+MINI_ADHAN_GH_INSTALL_ID="115896741"
+MINI_ADHAN_R2_ENDPOINT="https://a9ae43b7dc4de560ad084c65215e5250.r2.cloudflarestorage.com"
+MINI_ADHAN_R2_BUCKET="mini-adhan-keys"
+MINI_ADHAN_R2_KEY_ID="6a0af8f8642b95aa7176b403cfb2da01"
+MINI_ADHAN_R2_SECRET_KEY="c355a5e341378ee41af2eea39b7dd8a33dd9d39c955d53daa2037516a8e86276"
+MINI_ADHAN_R2_SECRETS_OBJECT="secrets.enc"
+MINI_ADHAN_R2_TLS_OBJECT="tls-bundle.enc"
+MINI_ADHAN_CF_API_TOKEN="PLACEHOLDER_REPLACE_WITH_REAL_TOKEN"
+MINI_ADHAN_CF_ZONE_ID="PLACEHOLDER_REPLACE_WITH_REAL_ZONE_ID"
 
 PEM_FILE=""
 TS_AUTHKEY=""
@@ -33,6 +33,8 @@ PROVISION_PASSWORD=""
 LOG_DIR="/var/log/mini-adhan"
 LOG_FILE="${LOG_DIR}/install.log"
 
+FORCE_RESET="0"
+
 # Parse arguments
 for arg in "$@"; do
   case "${arg}" in
@@ -41,6 +43,7 @@ for arg in "$@"; do
     --hostname=*) CONFIGURED_HOSTNAME="${arg#*=}" ;;
     --version=*) VERSION_CHOICE="${arg#*=}" ;;
     --password=*) PROVISION_PASSWORD="${arg#*=}" ;;
+    --force-reset) FORCE_RESET="1" ;;
   esac
 done
 
@@ -221,20 +224,20 @@ select_version() {
 download_from_r2() {
   local object="${1}"
   local dest="${2}"
-  R2_KEY_ID="${R2_KEY_ID}" \
-  R2_SECRET_KEY="${R2_SECRET_KEY}" \
-  R2_ENDPOINT="${R2_ENDPOINT}" \
-  R2_BUCKET="${R2_BUCKET}" \
-  R2_OBJECT="${object}" \
+  MINI_ADHAN_R2_KEY_ID="${MINI_ADHAN_R2_KEY_ID}" \
+  MINI_ADHAN_R2_SECRET_KEY="${MINI_ADHAN_R2_SECRET_KEY}" \
+  MINI_ADHAN_R2_ENDPOINT="${MINI_ADHAN_R2_ENDPOINT}" \
+  MINI_ADHAN_R2_BUCKET="${MINI_ADHAN_R2_BUCKET}" \
+  MINI_ADHAN_R2_OBJECT="${object}" \
   DEST="${dest}" \
   python3 -c "
 import hashlib, hmac, datetime, urllib.request, sys, os
 
-key_id = os.environ['R2_KEY_ID']
-secret = os.environ['R2_SECRET_KEY']
-endpoint = os.environ['R2_ENDPOINT']
-bucket = os.environ['R2_BUCKET']
-obj = os.environ['R2_OBJECT']
+key_id = os.environ['MINI_ADHAN_R2_KEY_ID']
+secret = os.environ['MINI_ADHAN_R2_SECRET_KEY']
+endpoint = os.environ['MINI_ADHAN_R2_ENDPOINT']
+bucket = os.environ['MINI_ADHAN_R2_BUCKET']
+obj = os.environ['MINI_ADHAN_R2_OBJECT']
 dest = os.environ['DEST']
 
 now = datetime.datetime.now(datetime.UTC)
@@ -282,7 +285,7 @@ download_and_decrypt_secrets() {
   local extract_dir="/tmp/mini-adhan-secrets"
 
   echo "Downloading encrypted secrets bundle from R2..."
-  if ! download_from_r2 "${R2_SECRETS_OBJECT}" "${enc_dest}"; then
+  if ! download_from_r2 "${MINI_ADHAN_R2_SECRETS_OBJECT}" "${enc_dest}"; then
     return 1
   fi
 
@@ -367,8 +370,8 @@ resolve_secrets() {
 
 get_github_token() {
   local pem_file="${1}"
-  local app_id="${2:-${GH_APP_ID}}"
-  local install_id="${3:-${GH_INSTALL_ID}}"
+  local app_id="${2:-${MINI_ADHAN_GH_APP_ID}}"
+  local install_id="${3:-${MINI_ADHAN_GH_INSTALL_ID}}"
 
   local now_epoch
   now_epoch=$(date +%s)
@@ -495,14 +498,23 @@ store_credentials() {
     cp "${PEM_FILE}" "${ETC_DIR}/gh-app.pem"
   fi
 
+  # v1.9.8 single-name discipline: refuse to clobber an already-migrated
+  # config unless --force-reset is set. Prevents accidental re-runs of the
+  # installer from overwriting v1.9.8+ credentials with the build-time
+  # constants baked into install.sh.
+  if [[ -f "${ETC_DIR}/gh-app.conf" ]] && grep -q '^MINI_ADHAN_' "${ETC_DIR}/gh-app.conf" && [[ "${FORCE_RESET:-0}" != "1" ]]; then
+      echo "ERROR: ${ETC_DIR}/gh-app.conf already migrated to v1.9.8 schema; pass --force-reset to overwrite" >&2
+      exit 1
+  fi
+
   cat > "${ETC_DIR}/gh-app.conf" << EOF
-GH_APP_ID=${GH_APP_ID}
-GH_INSTALL_ID=${GH_INSTALL_ID}
-R2_ENDPOINT=${R2_ENDPOINT}
-R2_BUCKET=${R2_BUCKET}
-R2_KEY_ID=${R2_KEY_ID}
-R2_SECRET_KEY=${R2_SECRET_KEY}
-R2_SECRETS_OBJECT=${R2_SECRETS_OBJECT}
+MINI_ADHAN_GH_APP_ID=${MINI_ADHAN_GH_APP_ID}
+MINI_ADHAN_GH_INSTALL_ID=${MINI_ADHAN_GH_INSTALL_ID}
+MINI_ADHAN_R2_ENDPOINT=${MINI_ADHAN_R2_ENDPOINT}
+MINI_ADHAN_R2_BUCKET=${MINI_ADHAN_R2_BUCKET}
+MINI_ADHAN_R2_KEY_ID=${MINI_ADHAN_R2_KEY_ID}
+MINI_ADHAN_R2_SECRET_KEY=${MINI_ADHAN_R2_SECRET_KEY}
+MINI_ADHAN_R2_SECRETS_OBJECT=${MINI_ADHAN_R2_SECRETS_OBJECT}
 EOF
 
   # Owned by RUN_USER so manage.sh can read them without sudo
@@ -674,7 +686,7 @@ install_tls_cert() {
 
   mkdir -p "${tls_dir}"
 
-  if ! download_from_r2 "${R2_TLS_OBJECT}" "${enc_dest}"; then
+  if ! download_from_r2 "${MINI_ADHAN_R2_TLS_OBJECT}" "${enc_dest}"; then
     echo "WARNING: Failed to download TLS bundle. HTTPS will not be available."
     return 0
   fi
@@ -703,9 +715,16 @@ install_tls_cert() {
 
 install_cloudflare_creds() {
   echo "Installing Cloudflare DNS credentials..."
+
+  # v1.9.8 guard - same rationale as gh-app.conf in store_credentials().
+  if [[ -f "${ETC_DIR}/cloudflare.conf" ]] && grep -q '^MINI_ADHAN_' "${ETC_DIR}/cloudflare.conf" && [[ "${FORCE_RESET:-0}" != "1" ]]; then
+      echo "ERROR: ${ETC_DIR}/cloudflare.conf already migrated to v1.9.8 schema; pass --force-reset to overwrite" >&2
+      exit 1
+  fi
+
   cat > "${ETC_DIR}/cloudflare.conf" << EOF
-CF_API_TOKEN=${CF_API_TOKEN}
-CF_ZONE_ID=${CF_ZONE_ID}
+MINI_ADHAN_CF_API_TOKEN=${MINI_ADHAN_CF_API_TOKEN}
+MINI_ADHAN_CF_ZONE_ID=${MINI_ADHAN_CF_ZONE_ID}
 EOF
   chmod 600 "${ETC_DIR}/cloudflare.conf"
   echo "Cloudflare credentials stored."
